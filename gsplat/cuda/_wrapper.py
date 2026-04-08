@@ -819,6 +819,8 @@ def rasterize_to_pixels(
     masks: Optional[Tensor] = None,  # [..., tile_height, tile_width]
     packed: bool = False,
     absgrad: bool = False,
+    textures: Optional[Tensor] = None,  # [N, T*T*channels] LGTM-style
+    texture_size: int = 0,  # T (2, 4, 8). 0 = no texture
 ) -> Tuple[Tensor, Tensor]:
     """Rasterizes Gaussians to pixels.
 
@@ -933,6 +935,8 @@ def rasterize_to_pixels(
         isect_offsets.contiguous(),
         flatten_ids.contiguous(),
         absgrad,
+        textures.contiguous() if textures is not None else None,
+        texture_size,
     )
 
     if padded_channels > 0:
@@ -1703,6 +1707,8 @@ class _RasterizeToPixels(torch.autograd.Function):
         isect_offsets: Tensor,  # [..., tile_height, tile_width]
         flatten_ids: Tensor,  # [n_isects]
         absgrad: bool,
+        textures: Tensor = None,  # [N, T*T*channels] or None
+        texture_size: int = 0,    # T (2, 4, 8). 0 = no texture
     ) -> Tuple[Tensor, Tensor]:
         render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
             "rasterize_to_pixels_3dgs_fwd"
@@ -1718,6 +1724,8 @@ class _RasterizeToPixels(torch.autograd.Function):
             tile_size,
             isect_offsets,
             flatten_ids,
+            textures,
+            texture_size,
         )
 
         ctx.save_for_backward(
@@ -1731,11 +1739,14 @@ class _RasterizeToPixels(torch.autograd.Function):
             flatten_ids,
             render_alphas,
             last_ids,
+            textures if textures is not None else torch.empty(0),
         )
         ctx.width = width
         ctx.height = height
         ctx.tile_size = tile_size
         ctx.absgrad = absgrad
+        ctx.texture_size = texture_size
+        ctx.has_textures = textures is not None
 
         # double to float
         render_alphas = render_alphas.float()
@@ -1758,11 +1769,14 @@ class _RasterizeToPixels(torch.autograd.Function):
             flatten_ids,
             render_alphas,
             last_ids,
+            textures_saved,
         ) = ctx.saved_tensors
         width = ctx.width
         height = ctx.height
         tile_size = ctx.tile_size
         absgrad = ctx.absgrad
+        texture_size = ctx.texture_size
+        textures = textures_saved if ctx.has_textures else None
 
         (
             v_means2d_abs,
@@ -1770,6 +1784,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             v_conics,
             v_colors,
             v_opacities,
+            v_textures,
         ) = _make_lazy_cuda_func("rasterize_to_pixels_3dgs_bwd")(
             means2d,
             conics,
@@ -1782,6 +1797,8 @@ class _RasterizeToPixels(torch.autograd.Function):
             tile_size,
             isect_offsets,
             flatten_ids,
+            textures,
+            texture_size,
             render_alphas,
             last_ids,
             v_render_colors.contiguous(),
@@ -1812,6 +1829,8 @@ class _RasterizeToPixels(torch.autograd.Function):
             None,  # isect_offsets
             None,  # flatten_ids
             None,  # absgrad
+            v_textures if ctx.has_textures else None,  # textures
+            None,  # texture_size
         )
 
 
