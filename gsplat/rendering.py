@@ -308,6 +308,9 @@ def rasterization(
     extra_signals_sh_degree: Optional[
         int
     ] = None,  # Currently only None or 3 is accepted.
+    # LGTM-inspired texture support
+    textures: Optional[Tensor] = None,  # [N, T*T*C] per-Gaussian texture grid
+    texture_size: int = 0,  # T (2, 4, 8). 0 = no texture
 ) -> Tuple[Tensor, Tensor, Dict]:
     """Rasterize a set of 3D Gaussians (N) to a batch of image planes (C).
 
@@ -1235,6 +1238,8 @@ def rasterization(
                 backgrounds=backgrounds,
                 packed=packed,
                 absgrad=absgrad,
+                textures=textures,
+                texture_size=texture_size,
             )
 
     if extra_signals is not None:
