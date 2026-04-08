@@ -52,7 +52,8 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
     const at::Tensor tile_offsets, // [..., tile_height, tile_width]
     const at::Tensor flatten_ids,  // [n_isects]
     // texture support (LGTM-inspired)
-    const at::optional<at::Tensor> textures,    // [N, 4, channels] or nullopt
+    const at::optional<at::Tensor> textures,    // [N, T*T*channels] or nullopt
+    const uint32_t texture_size,                // T (2, 4, 8). 0 = no texture
     // outputs
     at::Tensor renders, // [..., image_height, image_width, channels]
     at::Tensor alphas,  // [..., image_height, image_width]

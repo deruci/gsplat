@@ -53,7 +53,10 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     int64_t tile_size,
     // intersections
     const at::Tensor &tile_offsets, // [..., tile_height, tile_width]
-    const at::Tensor &flatten_ids   // [n_isects]
+    const at::Tensor &flatten_ids,  // [n_isects]
+    // texture support (LGTM-inspired)
+    const at::optional<at::Tensor> &textures,    // [N, T*T*channels] or nullopt
+    int64_t texture_size                          // T (2, 4, 8). 0 = no texture
 ) {
     DEVICE_GUARD(means2d);
     CHECK_INPUT(means2d);
@@ -67,6 +70,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     }
     if (masks.has_value()) {
         CHECK_INPUT(masks.value());
+    }
+    if (textures.has_value()) {
+        CHECK_INPUT(textures.value());
     }
 
     auto opt = means2d.options();
@@ -99,6 +105,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
             tile_size,                                                         \
             tile_offsets,                                                      \
             flatten_ids,                                                       \
+            textures,                                                          \
+            texture_size,                                                      \
             renders,                                                           \
             alphas,                                                            \
             last_ids                                                           \

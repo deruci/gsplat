@@ -56,8 +56,9 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
     const uint32_t tile_height,
     const int32_t *__restrict__ tile_offsets, // [I, tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
-    // Texture support (LGTM-inspired): per-Gaussian 2×2 color grid
-    const scalar_t *__restrict__ textures,    // [N, 4, CDIM] or nullptr
+    // Texture support (LGTM-inspired): per-Gaussian TxT color grid
+    const scalar_t *__restrict__ textures,    // [N, T*T, CDIM] or nullptr
+    const uint32_t texture_size,              // T (e.g. 2, 4, 8). 0 = no texture
     scalar_t
         *__restrict__ render_colors, // [I, image_height, image_width, CDIM]
     scalar_t *__restrict__ render_alphas, // [I, image_height, image_width, 1]
@@ -185,19 +186,46 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
 
             int32_t g = id_batch[t];
             const float vis = alpha * T;
-            const float *c_ptr;
-            if (textures != nullptr) {
-                // Texture lookup: determine quadrant from pixel-Gaussian offset
+            if (textures != nullptr && texture_size > 0) {
+                // Bilinear texture lookup (LGTM/BBSplat-style)
+                // Map pixel offset from Gaussian center to texture UV [-1, 1]
+                // Using the Gaussian's 2D extent (from conics) for normalization
                 const vec3 xy_opac_t = xy_opacity_batch[t];
-                int qu = (px >= xy_opac_t.x) ? 1 : 0;
-                int qv = (py >= xy_opac_t.y) ? 1 : 0;
-                c_ptr = textures + (g * 4 + qv * 2 + qu) * CDIM;
-            } else {
-                c_ptr = colors + g * CDIM;
-            }
+                const vec3 con = conic_batch[t];
+                // Approximate Gaussian radius from conics (inverse covariance)
+                float inv_radius = sqrtf(fmaxf(con.x, con.z));
+                float radius = 1.0f / fmaxf(inv_radius, 1e-6f);
+                // Normalized UV in [-1, 1]
+                float u = fminf(fmaxf((px - xy_opac_t.x) / radius, -1.0f), 1.0f);
+                float v = fminf(fmaxf((py - xy_opac_t.y) / radius, -1.0f), 1.0f);
+                // Map to texture coordinates [0, T-1]
+                float tx = ((u + 1.0f) * 0.5f) * (texture_size - 1);
+                float ty = ((v + 1.0f) * 0.5f) * (texture_size - 1);
+                // Bilinear interpolation
+                int ix0 = min(max((int)floorf(tx), 0), (int)texture_size - 1);
+                int iy0 = min(max((int)floorf(ty), 0), (int)texture_size - 1);
+                int ix1 = min(ix0 + 1, (int)texture_size - 1);
+                int iy1 = min(iy0 + 1, (int)texture_size - 1);
+                float wx = tx - ix0;
+                float wy = ty - iy0;
+                int tex_area = texture_size * texture_size;
+                int tex_offset = g * tex_area * CDIM;
 #pragma unroll
-            for (uint32_t k = 0; k < CDIM; ++k) {
-                pix_out[k] += c_ptr[k] * vis;
+                for (uint32_t k = 0; k < CDIM; ++k) {
+                    float c00 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix0];
+                    float c01 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix1];
+                    float c10 = textures[tex_offset + k * tex_area + iy1 * texture_size + ix0];
+                    float c11 = textures[tex_offset + k * tex_area + iy1 * texture_size + ix1];
+                    float sampled = c00 * (1-wx) * (1-wy) + c01 * wx * (1-wy) +
+                                    c10 * (1-wx) * wy + c11 * wx * wy;
+                    pix_out[k] += sampled * vis;
+                }
+            } else {
+                const float *c_ptr = colors + g * CDIM;
+#pragma unroll
+                for (uint32_t k = 0; k < CDIM; ++k) {
+                    pix_out[k] += c_ptr[k] * vis;
+                }
             }
             cur_idx = batch_start + t;
 
@@ -240,7 +268,8 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
     const at::Tensor tile_offsets, // [..., tile_height, tile_width]
     const at::Tensor flatten_ids,  // [n_isects]
     // texture support (LGTM-inspired)
-    const at::optional<at::Tensor> textures,    // [N, 4, channels] or nullopt
+    const at::optional<at::Tensor> textures,    // [N, T*T*channels] or nullopt
+    const uint32_t texture_size,                // T (2, 4, 8). 0 = no texture
     // outputs
     at::Tensor renders, // [..., image_height, image_width, channels]
     at::Tensor alphas,  // [..., image_height, image_width]
@@ -299,6 +328,7 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
             flatten_ids.data_ptr<int32_t>(),
             textures.has_value() ? textures.value().data_ptr<float>()
                                  : nullptr,
+            texture_size,
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
             last_ids.data_ptr<int32_t>()
@@ -322,6 +352,7 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
         const at::Tensor tile_offsets,                                         \
         const at::Tensor flatten_ids,                                          \
         const at::optional<at::Tensor> textures,                               \
+        uint32_t texture_size,                                                 \
         at::Tensor renders,                                                    \
         at::Tensor alphas,                                                     \
         at::Tensor last_ids                                                    \
