@@ -55,6 +55,8 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
     const uint32_t tile_height,
     const int32_t *__restrict__ tile_offsets, // [..., tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
+    // texture support
+    const scalar_t *__restrict__ textures,    // [N, 4, CDIM] or nullptr
     // fwd outputs
     const scalar_t
         *__restrict__ render_alphas,      // [..., image_height, image_width, 1]
@@ -69,7 +71,8 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
     vec2 *__restrict__ v_means2d,      // [..., N, 2] or [nnz, 2]
     vec3 *__restrict__ v_conics,       // [..., N, 3] or [nnz, 3]
     scalar_t *__restrict__ v_colors,   // [..., N, CDIM] or [nnz, CDIM]
-    scalar_t *__restrict__ v_opacities // [..., N] or [nnz]
+    scalar_t *__restrict__ v_opacities, // [..., N] or [nnz]
+    scalar_t *__restrict__ v_textures  // [N, 4, CDIM] or nullptr
 ) {
     auto block = cg::this_thread_block();
     uint32_t image_id = block.group_index().x;
@@ -273,10 +276,22 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
             warpSum(v_opacity_local, warp);
             if (warp.thread_rank() == 0) {
                 int32_t g = id_batch[t]; // flatten index in [I * N] or [nnz]
-                float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;
+                if (textures != nullptr && v_textures != nullptr) {
+                    // Gradient goes to texture quadrant instead of colors
+                    const vec3 xy_opac_t = xy_opacity_batch[t];
+                    int qu = (px >= xy_opac_t.x) ? 1 : 0;
+                    int qv = (py >= xy_opac_t.y) ? 1 : 0;
+                    float *v_tex_ptr = (float *)(v_textures) + (g * 4 + qv * 2 + qu) * CDIM;
 #pragma unroll
-                for (uint32_t k = 0; k < CDIM; ++k) {
-                    gpuAtomicAdd(v_rgb_ptr + k, v_rgb_local[k]);
+                    for (uint32_t k = 0; k < CDIM; ++k) {
+                        gpuAtomicAdd(v_tex_ptr + k, v_rgb_local[k]);
+                    }
+                } else {
+                    float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;
+#pragma unroll
+                    for (uint32_t k = 0; k < CDIM; ++k) {
+                        gpuAtomicAdd(v_rgb_ptr + k, v_rgb_local[k]);
+                    }
                 }
 
                 float *v_conic_ptr = (float *)(v_conics) + 3 * g;

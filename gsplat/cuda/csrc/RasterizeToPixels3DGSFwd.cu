@@ -56,6 +56,8 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
     const uint32_t tile_height,
     const int32_t *__restrict__ tile_offsets, // [I, tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
+    // Texture support (LGTM-inspired): per-Gaussian 2×2 color grid
+    const scalar_t *__restrict__ textures,    // [N, 4, CDIM] or nullptr
     scalar_t
         *__restrict__ render_colors, // [I, image_height, image_width, CDIM]
     scalar_t *__restrict__ render_alphas, // [I, image_height, image_width, 1]
@@ -183,7 +185,16 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
 
             int32_t g = id_batch[t];
             const float vis = alpha * T;
-            const float *c_ptr = colors + g * CDIM;
+            const float *c_ptr;
+            if (textures != nullptr) {
+                // Texture lookup: determine quadrant from pixel-Gaussian offset
+                const vec3 xy_opac_t = xy_opacity_batch[t];
+                int qu = (px >= xy_opac_t.x) ? 1 : 0;
+                int qv = (py >= xy_opac_t.y) ? 1 : 0;
+                c_ptr = textures + (g * 4 + qv * 2 + qu) * CDIM;
+            } else {
+                c_ptr = colors + g * CDIM;
+            }
 #pragma unroll
             for (uint32_t k = 0; k < CDIM; ++k) {
                 pix_out[k] += c_ptr[k] * vis;
@@ -228,6 +239,8 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
     // intersections
     const at::Tensor tile_offsets, // [..., tile_height, tile_width]
     const at::Tensor flatten_ids,  // [n_isects]
+    // texture support (LGTM-inspired)
+    const at::optional<at::Tensor> textures,    // [N, 4, channels] or nullopt
     // outputs
     at::Tensor renders, // [..., image_height, image_width, channels]
     at::Tensor alphas,  // [..., image_height, image_width]
@@ -284,6 +297,8 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
             tile_height,
             tile_offsets.data_ptr<int32_t>(),
             flatten_ids.data_ptr<int32_t>(),
+            textures.has_value() ? textures.value().data_ptr<float>()
+                                 : nullptr,
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
             last_ids.data_ptr<int32_t>()
@@ -306,6 +321,7 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
         uint32_t tile_size,                                                    \
         const at::Tensor tile_offsets,                                         \
         const at::Tensor flatten_ids,                                          \
+        const at::optional<at::Tensor> textures,                               \
         at::Tensor renders,                                                    \
         at::Tensor alphas,                                                     \
         at::Tensor last_ids                                                    \
