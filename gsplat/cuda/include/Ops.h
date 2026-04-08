@@ -322,44 +322,39 @@ std::tuple<at::Tensor, at::Tensor> quat_scale_to_covar_preci_bwd(
 
 // Rasterize 3D Gaussian to pixels
 std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
-    // Gaussian parameters
-    const at::Tensor &means2d,   // [..., N, 2] or [nnz, 2]
-    const at::Tensor &conics,    // [..., N, 3] or [nnz, 3]
-    const at::Tensor &colors,    // [..., N, channels] or [nnz, channels]
-    const at::Tensor &opacities, // [..., N]  or [nnz]
-    const at::optional<at::Tensor> &backgrounds, // [..., channels]
-    const at::optional<at::Tensor> &masks,       // [..., tile_height, tile_width]
-    // image size
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::optional<at::Tensor> &backgrounds,
+    const at::optional<at::Tensor> &masks,
     int64_t image_width,
     int64_t image_height,
     int64_t tile_size,
-    // intersections
-    const at::Tensor &tile_offsets, // [..., tile_height, tile_width]
-    const at::Tensor &flatten_ids   // [n_isects]
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids,
+    const at::optional<at::Tensor> &textures,
+    int64_t texture_size
 );
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 rasterize_to_pixels_3dgs_bwd(
-    // Gaussian parameters
-    const at::Tensor &means2d,                   // [..., N, 2] or [nnz, 2]
-    const at::Tensor &conics,                    // [..., N, 3] or [nnz, 3]
-    const at::Tensor &colors,                    // [..., N, 3] or [nnz, 3]
-    const at::Tensor &opacities,                 // [..., N] or [nnz]
-    const at::optional<at::Tensor> &backgrounds, // [..., 3]
-    const at::optional<at::Tensor> &masks,       // [..., tile_height, tile_width]
-    // image size
+    const at::Tensor &means2d,
+    const at::Tensor &conics,
+    const at::Tensor &colors,
+    const at::Tensor &opacities,
+    const at::optional<at::Tensor> &backgrounds,
+    const at::optional<at::Tensor> &masks,
     int64_t image_width,
     int64_t image_height,
     int64_t tile_size,
-    // intersections
-    const at::Tensor &tile_offsets, // [..., tile_height, tile_width]
-    const at::Tensor &flatten_ids,  // [n_isects]
-    // forward outputs
-    const at::Tensor &render_alphas, // [..., image_height, image_width, 1]
-    const at::Tensor &last_ids,      // [..., image_height, image_width]
-    // gradients of outputs
-    const at::Tensor &v_render_colors, // [..., image_height, image_width, 3]
-    const at::Tensor &v_render_alphas, // [..., image_height, image_width, 1]
-    // options
+    const at::Tensor &tile_offsets,
+    const at::Tensor &flatten_ids,
+    const at::optional<at::Tensor> &textures,
+    int64_t texture_size,
+    const at::Tensor &render_alphas,
+    const at::Tensor &last_ids,
+    const at::Tensor &v_render_colors,
+    const at::Tensor &v_render_alphas,
     bool absgrad
 );
 

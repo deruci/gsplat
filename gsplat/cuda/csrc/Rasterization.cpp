@@ -126,7 +126,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     return std::make_tuple(renders, alphas, last_ids);
 }
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 rasterize_to_pixels_3dgs_bwd(
     // Gaussian parameters
     const at::Tensor &means2d,                   // [..., N, 2] or [nnz, 2]
@@ -142,6 +142,9 @@ rasterize_to_pixels_3dgs_bwd(
     // intersections
     const at::Tensor &tile_offsets, // [..., tile_height, tile_width]
     const at::Tensor &flatten_ids,  // [n_isects]
+    // texture support
+    const at::optional<at::Tensor> &textures,    // [N, T*T*channels] or nullopt
+    int64_t texture_size,                         // T (2, 4, 8). 0 = no texture
     // forward outputs
     const at::Tensor &render_alphas, // [..., image_height, image_width, 1]
     const at::Tensor &last_ids,      // [..., image_height, image_width]
@@ -179,6 +182,10 @@ rasterize_to_pixels_3dgs_bwd(
     if (absgrad) {
         v_means2d_abs = at::zeros_like(means2d);
     }
+    at::Tensor v_textures;
+    if (textures.has_value()) {
+        v_textures = at::zeros_like(textures.value());
+    }
 
 #define __LAUNCH_KERNEL__(N)                                                   \
     case N:                                                                    \
@@ -194,6 +201,8 @@ rasterize_to_pixels_3dgs_bwd(
             tile_size,                                                         \
             tile_offsets,                                                      \
             flatten_ids,                                                       \
+            textures,                                                          \
+            texture_size,                                                      \
             render_alphas,                                                     \
             last_ids,                                                          \
             v_render_colors,                                                   \
@@ -202,13 +211,11 @@ rasterize_to_pixels_3dgs_bwd(
             v_means2d,                                                         \
             v_conics,                                                          \
             v_colors,                                                          \
-            v_opacities                                                        \
+            v_opacities,                                                       \
+            textures.has_value() ? c10::optional<at::Tensor>(v_textures) : c10::nullopt \
         );                                                                     \
         break;
 
-    // TODO: an optimization can be done by passing the actual number of
-    // channels into the kernel functions and avoid necessary global memory
-    // writes. This requires moving the channel padding from python to C side.
     switch (channels) {
         GSPLAT_FOR_EACH(__LAUNCH_KERNEL__, GSPLAT_NUM_CHANNELS)
     default:
@@ -217,7 +224,7 @@ rasterize_to_pixels_3dgs_bwd(
 #undef __LAUNCH_KERNEL__
 
     return std::make_tuple(
-        v_means2d_abs, v_means2d, v_conics, v_colors, v_opacities
+        v_means2d_abs, v_means2d, v_conics, v_colors, v_opacities, v_textures
     );
 }
 
