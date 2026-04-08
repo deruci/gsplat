@@ -51,6 +51,8 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
     // intersections
     const at::Tensor tile_offsets, // [..., tile_height, tile_width]
     const at::Tensor flatten_ids,  // [n_isects]
+    // texture support (LGTM-inspired)
+    const at::optional<at::Tensor> textures,    // [N, 4, channels] or nullopt
     // outputs
     at::Tensor renders, // [..., image_height, image_width, channels]
     at::Tensor alphas,  // [..., image_height, image_width]
@@ -73,6 +75,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
     // intersections
     const at::Tensor tile_offsets,    // [..., tile_height, tile_width]
     const at::Tensor flatten_ids,     // [n_isects]
+    // texture support
+    const at::optional<at::Tensor> textures,    // [N, 4, channels] or nullopt
     // forward outputs
     const at::Tensor render_alphas,   // [..., image_height, image_width, 1]
     const at::Tensor last_ids,        // [..., image_height, image_width]
@@ -84,7 +88,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
     at::Tensor v_means2d,                   // [..., N, 2] or [nnz, 2]
     at::Tensor v_conics,                    // [..., N, 3] or [nnz, 3]
     at::Tensor v_colors,                    // [..., N, 3] or [nnz, 3]
-    at::Tensor v_opacities                  // [..., N] or [nnz]
+    at::Tensor v_opacities,                 // [..., N] or [nnz]
+    at::optional<at::Tensor> v_textures     // [N, 4, channels] or nullopt
 );
 
 /////////////////////////////////////////////////
