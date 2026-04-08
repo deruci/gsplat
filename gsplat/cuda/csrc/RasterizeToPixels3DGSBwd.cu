@@ -295,15 +295,21 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
                     float wy = ty - iy0;
                     int tex_area = texture_size * texture_size;
                     int g_tex = packed ? g : (g % N);
-                    float *v_tex_base = (float *)(v_textures) + g_tex * tex_area * CDIM;
-#pragma unroll
-                    for (uint32_t k = 0; k < CDIM; ++k) {
+                    constexpr uint32_t TEX_CHANNELS = 3;
+                    float *v_tex_base = (float *)(v_textures) + g_tex * tex_area * TEX_CHANNELS;
+                    // Gradient to texture for RGB channels only
+                    for (uint32_t k = 0; k < min(TEX_CHANNELS, CDIM); ++k) {
                         float g_out = v_rgb_local[k];
                         int co = k * tex_area;
                         gpuAtomicAdd(v_tex_base + co + iy0 * texture_size + ix0, (1-wx) * (1-wy) * g_out);
                         gpuAtomicAdd(v_tex_base + co + iy0 * texture_size + ix1, wx * (1-wy) * g_out);
                         gpuAtomicAdd(v_tex_base + co + iy1 * texture_size + ix0, (1-wx) * wy * g_out);
                         gpuAtomicAdd(v_tex_base + co + iy1 * texture_size + ix1, wx * wy * g_out);
+                    }
+                    // Extra channels gradient goes to colors as normal
+                    float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;
+                    for (uint32_t k = TEX_CHANNELS; k < CDIM; ++k) {
+                        gpuAtomicAdd(v_rgb_ptr + k, v_rgb_local[k]);
                     }
                 } else {
                     float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;

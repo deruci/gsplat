@@ -188,6 +188,7 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
             const float vis = alpha * T;
             if (textures != nullptr && texture_size > 0) {
                 // Bilinear texture lookup (LGTM/BBSplat-style)
+                // Texture is RGB-only (3 channels). Extra channels (depth) use colors.
                 const vec3 xy_opac_t = xy_opacity_batch[t];
                 const vec3 con = conic_batch[t];
                 float inv_radius = sqrtf(fmaxf(con.x, con.z));
@@ -203,11 +204,12 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
                 float wx = tx - ix0;
                 float wy = ty - iy0;
                 int tex_area = texture_size * texture_size;
-                // packed=false: g is in [0, I*N), texture is [N], so use g % N
                 int g_tex = packed ? g : (g % N);
-                int tex_offset = g_tex * tex_area * CDIM;
-#pragma unroll
-                for (uint32_t k = 0; k < CDIM; ++k) {
+                // Texture channels: min(3, CDIM) for RGB, rest from colors
+                constexpr uint32_t TEX_CHANNELS = 3;
+                int tex_offset = g_tex * tex_area * TEX_CHANNELS;
+                // RGB from texture
+                for (uint32_t k = 0; k < min(TEX_CHANNELS, CDIM); ++k) {
                     float c00 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix0];
                     float c01 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix1];
                     float c10 = textures[tex_offset + k * tex_area + iy1 * texture_size + ix0];
@@ -215,6 +217,11 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
                     float sampled = c00 * (1-wx) * (1-wy) + c01 * wx * (1-wy) +
                                     c10 * (1-wx) * wy + c11 * wx * wy;
                     pix_out[k] += sampled * vis;
+                }
+                // Extra channels (depth etc.) from colors
+                const float *c_ptr = colors + g * CDIM;
+                for (uint32_t k = TEX_CHANNELS; k < CDIM; ++k) {
+                    pix_out[k] += c_ptr[k] * vis;
                 }
             } else {
                 const float *c_ptr = colors + g * CDIM;
