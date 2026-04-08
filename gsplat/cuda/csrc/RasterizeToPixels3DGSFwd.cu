@@ -208,20 +208,20 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
                 // Texture channels: min(3, CDIM) for RGB, rest from colors
                 constexpr uint32_t TEX_CHANNELS = 3;
                 int tex_offset = g_tex * tex_area * TEX_CHANNELS;
-                // RGB from texture
+                // LGTM Eq.2: color = texture[u] + SH(c, d)
+                // RGB: texture + SH (additive). Extra channels: SH only.
+                const float *c_ptr = colors + g * CDIM;
                 for (uint32_t k = 0; k < min(TEX_CHANNELS, CDIM); ++k) {
                     float c00 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix0];
                     float c01 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix1];
                     float c10 = textures[tex_offset + k * tex_area + iy1 * texture_size + ix0];
                     float c11 = textures[tex_offset + k * tex_area + iy1 * texture_size + ix1];
-                    float sampled = c00 * (1-wx) * (1-wy) + c01 * wx * (1-wy) +
-                                    c10 * (1-wx) * wy + c11 * wx * wy;
-                    pix_out[k] += sampled * vis;
+                    float tex_sampled = c00 * (1-wx) * (1-wy) + c01 * wx * (1-wy) +
+                                        c10 * (1-wx) * wy + c11 * wx * wy;
+                    pix_out[k] += (c_ptr[k] + tex_sampled) * vis;  // SH + texture
                 }
-                // Extra channels (depth etc.) from colors
-                const float *c_ptr = colors + g * CDIM;
                 for (uint32_t k = TEX_CHANNELS; k < CDIM; ++k) {
-                    pix_out[k] += c_ptr[k] * vis;
+                    pix_out[k] += c_ptr[k] * vis;  // depth etc.
                 }
             } else {
                 const float *c_ptr = colors + g * CDIM;
