@@ -294,7 +294,8 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
                     float wx = tx - ix0;
                     float wy = ty - iy0;
                     int tex_area = texture_size * texture_size;
-                    float *v_tex_base = (float *)(v_textures) + g * tex_area * CDIM;
+                    int g_tex = packed ? g : (g % N);
+                    float *v_tex_base = (float *)(v_textures) + g_tex * tex_area * CDIM;
 #pragma unroll
                     for (uint32_t k = 0; k < CDIM; ++k) {
                         float g_out = v_rgb_local[k];

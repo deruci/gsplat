@@ -188,20 +188,14 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
             const float vis = alpha * T;
             if (textures != nullptr && texture_size > 0) {
                 // Bilinear texture lookup (LGTM/BBSplat-style)
-                // Map pixel offset from Gaussian center to texture UV [-1, 1]
-                // Using the Gaussian's 2D extent (from conics) for normalization
                 const vec3 xy_opac_t = xy_opacity_batch[t];
                 const vec3 con = conic_batch[t];
-                // Approximate Gaussian radius from conics (inverse covariance)
                 float inv_radius = sqrtf(fmaxf(con.x, con.z));
                 float radius = 1.0f / fmaxf(inv_radius, 1e-6f);
-                // Normalized UV in [-1, 1]
                 float u = fminf(fmaxf((px - xy_opac_t.x) / radius, -1.0f), 1.0f);
                 float v = fminf(fmaxf((py - xy_opac_t.y) / radius, -1.0f), 1.0f);
-                // Map to texture coordinates [0, T-1]
                 float tx = ((u + 1.0f) * 0.5f) * (texture_size - 1);
                 float ty = ((v + 1.0f) * 0.5f) * (texture_size - 1);
-                // Bilinear interpolation
                 int ix0 = min(max((int)floorf(tx), 0), (int)texture_size - 1);
                 int iy0 = min(max((int)floorf(ty), 0), (int)texture_size - 1);
                 int ix1 = min(ix0 + 1, (int)texture_size - 1);
@@ -209,7 +203,9 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
                 float wx = tx - ix0;
                 float wy = ty - iy0;
                 int tex_area = texture_size * texture_size;
-                int tex_offset = g * tex_area * CDIM;
+                // packed=false: g is in [0, I*N), texture is [N], so use g % N
+                int g_tex = packed ? g : (g % N);
+                int tex_offset = g_tex * tex_area * CDIM;
 #pragma unroll
                 for (uint32_t k = 0; k < CDIM; ++k) {
                     float c00 = textures[tex_offset + k * tex_area + iy0 * texture_size + ix0];
