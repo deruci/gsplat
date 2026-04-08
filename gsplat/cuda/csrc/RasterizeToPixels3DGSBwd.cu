@@ -56,7 +56,8 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
     const int32_t *__restrict__ tile_offsets, // [..., tile_height, tile_width]
     const int32_t *__restrict__ flatten_ids,  // [n_isects]
     // texture support
-    const scalar_t *__restrict__ textures,    // [N, 4, CDIM] or nullptr
+    const scalar_t *__restrict__ textures,    // [N, T*T*CDIM] or nullptr
+    const uint32_t texture_size,              // T (2, 4, 8). 0 = no texture
     // fwd outputs
     const scalar_t
         *__restrict__ render_alphas,      // [..., image_height, image_width, 1]
@@ -276,15 +277,32 @@ __global__ void rasterize_to_pixels_3dgs_bwd_kernel(
             warpSum(v_opacity_local, warp);
             if (warp.thread_rank() == 0) {
                 int32_t g = id_batch[t]; // flatten index in [I * N] or [nnz]
-                if (textures != nullptr && v_textures != nullptr) {
-                    // Gradient goes to texture quadrant instead of colors
+                if (textures != nullptr && v_textures != nullptr && texture_size > 0) {
+                    // Bilinear gradient to texture (BBSplat-style)
                     const vec3 xy_opac_t = xy_opacity_batch[t];
-                    int qu = (px >= xy_opac_t.x) ? 1 : 0;
-                    int qv = (py >= xy_opac_t.y) ? 1 : 0;
-                    float *v_tex_ptr = (float *)(v_textures) + (g * 4 + qv * 2 + qu) * CDIM;
+                    const vec3 con = conic_batch[t];
+                    float inv_radius = sqrtf(fmaxf(con.x, con.z));
+                    float radius = 1.0f / fmaxf(inv_radius, 1e-6f);
+                    float u = fminf(fmaxf((px - xy_opac_t.x) / radius, -1.0f), 1.0f);
+                    float v = fminf(fmaxf((py - xy_opac_t.y) / radius, -1.0f), 1.0f);
+                    float tx = ((u + 1.0f) * 0.5f) * (texture_size - 1);
+                    float ty = ((v + 1.0f) * 0.5f) * (texture_size - 1);
+                    int ix0 = min(max((int)floorf(tx), 0), (int)texture_size - 1);
+                    int iy0 = min(max((int)floorf(ty), 0), (int)texture_size - 1);
+                    int ix1 = min(ix0 + 1, (int)texture_size - 1);
+                    int iy1 = min(iy0 + 1, (int)texture_size - 1);
+                    float wx = tx - ix0;
+                    float wy = ty - iy0;
+                    int tex_area = texture_size * texture_size;
+                    float *v_tex_base = (float *)(v_textures) + g * tex_area * CDIM;
 #pragma unroll
                     for (uint32_t k = 0; k < CDIM; ++k) {
-                        gpuAtomicAdd(v_tex_ptr + k, v_rgb_local[k]);
+                        float g_out = v_rgb_local[k];
+                        int co = k * tex_area;
+                        gpuAtomicAdd(v_tex_base + co + iy0 * texture_size + ix0, (1-wx) * (1-wy) * g_out);
+                        gpuAtomicAdd(v_tex_base + co + iy0 * texture_size + ix1, wx * (1-wy) * g_out);
+                        gpuAtomicAdd(v_tex_base + co + iy1 * texture_size + ix0, (1-wx) * wy * g_out);
+                        gpuAtomicAdd(v_tex_base + co + iy1 * texture_size + ix1, wx * wy * g_out);
                     }
                 } else {
                     float *v_rgb_ptr = (float *)(v_colors) + CDIM * g;
@@ -331,6 +349,9 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
     // intersections
     const at::Tensor tile_offsets, // [..., tile_height, tile_width]
     const at::Tensor flatten_ids,  // [n_isects]
+    // texture support
+    const at::optional<at::Tensor> textures,    // [N, T*T*CDIM] or nullopt
+    const uint32_t texture_size,                // T (2, 4, 8). 0 = no texture
     // forward outputs
     const at::Tensor render_alphas, // [..., image_height, image_width, 1]
     const at::Tensor last_ids,      // [..., image_height, image_width]
@@ -342,7 +363,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
     at::Tensor v_means2d,                   // [..., N, 2] or [nnz, 2]
     at::Tensor v_conics,                    // [..., N, 3] or [nnz, 3]
     at::Tensor v_colors,                    // [..., N, 3] or [nnz, 3]
-    at::Tensor v_opacities                  // [..., N] or [nnz]
+    at::Tensor v_opacities,                 // [..., N] or [nnz]
+    at::optional<at::Tensor> v_textures     // [N, T*T*CDIM] or nullopt
 ) {
     bool packed = means2d.dim() == 2;
 
@@ -401,6 +423,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
             tile_height,
             tile_offsets.data_ptr<int32_t>(),
             flatten_ids.data_ptr<int32_t>(),
+            textures.has_value() ? textures.value().data_ptr<float>() : nullptr,
+            texture_size,
             render_alphas.data_ptr<float>(),
             last_ids.data_ptr<int32_t>(),
             v_render_colors.data_ptr<float>(),
@@ -413,7 +437,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
             reinterpret_cast<vec2 *>(v_means2d.data_ptr<float>()),
             reinterpret_cast<vec3 *>(v_conics.data_ptr<float>()),
             v_colors.data_ptr<float>(),
-            v_opacities.data_ptr<float>()
+            v_opacities.data_ptr<float>(),
+            v_textures.has_value() ? v_textures.value().data_ptr<float>() : nullptr
         );
 }
 
@@ -433,6 +458,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
         uint32_t tile_size,                                                    \
         const at::Tensor tile_offsets,                                         \
         const at::Tensor flatten_ids,                                          \
+        const at::optional<at::Tensor> textures,                               \
+        uint32_t texture_size,                                                 \
         const at::Tensor render_alphas,                                        \
         const at::Tensor last_ids,                                             \
         const at::Tensor v_render_colors,                                      \
@@ -441,7 +468,8 @@ void launch_rasterize_to_pixels_3dgs_bwd_kernel(
         at::Tensor v_means2d,                                                  \
         at::Tensor v_conics,                                                   \
         at::Tensor v_colors,                                                   \
-        at::Tensor v_opacities                                                 \
+        at::Tensor v_opacities,                                                \
+        at::optional<at::Tensor> v_textures                                    \
     );
 
 GSPLAT_FOR_EACH(__INS__, GSPLAT_NUM_CHANNELS)
