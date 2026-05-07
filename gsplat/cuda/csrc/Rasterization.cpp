@@ -39,7 +39,7 @@ namespace gsplat {
 // 3DGS
 ////////////////////////////////////////////////////
 
-std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     // Gaussian parameters
     const at::Tensor &means2d,   // [..., N, 2] or [nnz, 2]
     const at::Tensor &conics,    // [..., N, 3] or [nnz, 3]
@@ -56,7 +56,9 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     const at::Tensor &flatten_ids,  // [n_isects]
     // texture support (LGTM-inspired)
     const at::optional<at::Tensor> &textures,    // [N, T*T*channels] or nullopt
-    int64_t texture_size                          // T (2, 4, 8). 0 = no texture
+    int64_t texture_size,                         // T (2, 4, 8). 0 = no texture
+    // edge-aware densification
+    const at::optional<at::Tensor> &pixel_weights // [I, H, W] or nullopt
 ) {
     DEVICE_GUARD(means2d);
     CHECK_INPUT(means2d);
@@ -74,8 +76,12 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     if (textures.has_value()) {
         CHECK_INPUT(textures.value());
     }
+    if (pixel_weights.has_value()) {
+        CHECK_INPUT(pixel_weights.value());
+    }
 
     auto opt = means2d.options();
+    bool packed = means2d.dim() == 2;
     at::DimVector image_dims(tile_offsets.sizes().slice(0, tile_offsets.dim() - 2));
     uint32_t channels = colors.size(-1);
 
@@ -90,6 +96,22 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     at::DimVector last_ids_dims(image_dims);
     last_ids_dims.append({image_height, image_width});
     at::Tensor last_ids = at::empty(last_ids_dims, opt.dtype(at::kInt));
+
+    // Edge-aware densification: allocate per-Gaussian weight accumulator
+    // NOTE: Must use explicit float32 dtype and no requires_grad, regardless
+    // of means2d.options(), because the CUDA kernel uses atomicAdd on float*.
+    // Always return a defined (possibly empty) tensor to avoid undefined tensor
+    // issues in Python when the 4-tuple is unpacked.
+    at::Tensor accum_weights = at::empty({0}, means2d.options().dtype(at::kFloat).requires_grad(false));
+    at::optional<at::Tensor> accum_weights_opt = c10::nullopt;
+    if (pixel_weights.has_value() && !packed) {
+        uint32_t N_gaussians = means2d.size(-2);
+        accum_weights = at::zeros(
+            {(int64_t)N_gaussians},
+            at::TensorOptions().dtype(at::kFloat).device(means2d.device()).requires_grad(false)
+        );
+        accum_weights_opt = accum_weights;
+    }
 
 #define __LAUNCH_KERNEL__(N)                                                   \
     case N:                                                                    \
@@ -107,6 +129,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
             flatten_ids,                                                       \
             textures,                                                          \
             texture_size,                                                      \
+            pixel_weights,                                                     \
+            accum_weights_opt,                                                 \
             renders,                                                           \
             alphas,                                                            \
             last_ids                                                           \
@@ -123,7 +147,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     }
 #undef __LAUNCH_KERNEL__
 
-    return std::make_tuple(renders, alphas, last_ids);
+    return std::make_tuple(renders, alphas, last_ids, accum_weights);
 }
 
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>

@@ -80,11 +80,15 @@ def get_build_parameters():
         + list(glob.glob(os.path.join(PATH, "csrc/*.cpp")))
         + [os.path.join(PATH, "ext.cpp")]
     )
-
     # Compiler flags ----------------------------------
     extra_cflags = []
     extra_cuda_cflags = []
     extra_ldflags = []
+
+    # Use g++-13 for c++20 support if the default compiler is too old
+    if sys.platform not in ("win32", "darwin") and os.path.isfile("/usr/bin/g++-13"):
+        os.environ["CXX"] = "/usr/bin/g++-13"
+        os.environ["CC"] = "/usr/bin/gcc-13"
 
     if sys.platform == "win32":
         extra_cflags += ["/std:c++20", "/Zc:preprocessor", "-DWIN32_LEAN_AND_MEAN"]
@@ -103,7 +107,7 @@ def get_build_parameters():
         extra_cflags += ["-arch", "arm64"]
         extra_ldflags += ["-arch", "arm64"]
 
-    extra_cuda_cflags += ["--forward-unknown-opts"]
+    extra_cuda_cflags += ["--forward-unknown-opts", "--expt-relaxed-constexpr"]
 
     # Debug/Release mode
     # MSVC (cl) does not support -O3/-O0; use -O2/-Od (torch converts - to /)

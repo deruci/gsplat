@@ -944,6 +944,95 @@ def rasterize_to_pixels(
     return render_colors, render_alphas
 
 
+@torch.no_grad()
+def compute_edge_scores(
+    means2d: Tensor,  # [C, N, 2]
+    conics: Tensor,  # [C, N, 3]
+    colors: Tensor,  # [C, N, channels]
+    opacities: Tensor,  # [C, N]
+    image_width: int,
+    image_height: int,
+    tile_size: int,
+    isect_offsets: Tensor,  # [C, tile_height, tile_width]
+    flatten_ids: Tensor,  # [n_isects]
+    pixel_weights: Tensor,  # [C, H, W] per-pixel edge weights
+    backgrounds: Optional[Tensor] = None,
+    masks: Optional[Tensor] = None,
+) -> Tensor:
+    """Compute per-Gaussian edge-aware importance scores via CUDA rasterizer.
+
+    Forward-only (no gradients). Accumulates pixel_weight * visibility per
+    Gaussian across all pixels and cameras using atomicAdd in the kernel.
+
+    Based on Improved-GS (arXiv 2508.12313) Section 3.1: Edge-Aware Score.
+
+    Args:
+        pixel_weights: [C, H, W] normalized edge map per camera.
+        Other args: same as rasterize_to_pixels (non-packed mode only).
+
+    Returns:
+        accum_weights: [N] per-Gaussian accumulated edge-weighted importance.
+    """
+    assert means2d.dim() >= 3, "compute_edge_scores requires non-packed mode"
+    channels = colors.shape[-1]
+    device = means2d.device
+
+    # Flush any pending CUDA errors from prior operations (e.g., training
+    # backward pass). Without this, a stale async error from a previous
+    # kernel is reported at the first CUDA op inside this function, making
+    # it appear as though the edge score kernel itself failed.
+    torch.cuda.synchronize()
+
+    # Ensure all inputs are float32 and detached from autograd.
+    # The CUDA kernel uses float* pointers and atomicAdd on float; passing
+    # tensors with wrong dtype or requires_grad=True can cause silent
+    # memory corruption or allocator issues.
+    means2d = means2d.detach().float().contiguous()
+    conics = conics.detach().float().contiguous()
+    colors = colors.detach().float().contiguous()
+    opacities = opacities.detach().float().contiguous()
+    pixel_weights = pixel_weights.detach().float().contiguous()
+
+    if backgrounds is not None:
+        backgrounds = backgrounds.detach().float().contiguous()
+    if masks is not None:
+        masks = masks.contiguous()
+
+    # Pad channels like rasterize_to_pixels does
+    supported = {1,2,3,4,5,8,9,16,17,32,33,64,65,128,129,256,257,512,513}
+    if channels not in supported:
+        padded_channels = (1 << (channels - 1).bit_length()) - channels
+        colors = torch.cat(
+            [colors, torch.zeros(*colors.shape[:-1], padded_channels, device=device)],
+            dim=-1,
+        )
+        if backgrounds is not None:
+            backgrounds = torch.cat(
+                [backgrounds, torch.zeros(*backgrounds.shape[:-1], padded_channels, device=device)],
+                dim=-1,
+            )
+
+    _renders, _alphas, _last_ids, accum_weights = _make_lazy_cuda_func(
+        "rasterize_to_pixels_3dgs_fwd"
+    )(
+        means2d,
+        conics,
+        colors,
+        opacities,
+        backgrounds,
+        masks,
+        image_width,
+        image_height,
+        tile_size,
+        isect_offsets.contiguous(),
+        flatten_ids.contiguous(),
+        None,  # textures
+        0,     # texture_size
+        pixel_weights,  # edge weights
+    )
+    return accum_weights
+
+
 def rasterize_to_pixels_eval3d(
     means: Tensor,  # [..., N, 3]
     quats: Tensor,  # [..., N, 4]
@@ -1710,7 +1799,7 @@ class _RasterizeToPixels(torch.autograd.Function):
         textures: Tensor = None,  # [N, T*T*channels] or None
         texture_size: int = 0,    # T (2, 4, 8). 0 = no texture
     ) -> Tuple[Tensor, Tensor]:
-        render_colors, render_alphas, last_ids = _make_lazy_cuda_func(
+        render_colors, render_alphas, last_ids, _accum_weights = _make_lazy_cuda_func(
             "rasterize_to_pixels_3dgs_fwd"
         )(
             means2d,
@@ -1726,6 +1815,7 @@ class _RasterizeToPixels(torch.autograd.Function):
             flatten_ids,
             textures,
             texture_size,
+            None,  # pixel_weights: not used during training
         )
 
         ctx.save_for_backward(

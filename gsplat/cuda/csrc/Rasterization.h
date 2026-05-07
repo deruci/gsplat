@@ -54,6 +54,9 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
     // texture support (LGTM-inspired)
     const at::optional<at::Tensor> textures,    // [N, T*T*channels] or nullopt
     const uint32_t texture_size,                // T (2, 4, 8). 0 = no texture
+    // edge-aware densification
+    const at::optional<at::Tensor> pixel_weights,  // [I, H, W] or nullopt
+    at::optional<at::Tensor> accum_weights,         // [N] or nullopt (output)
     // outputs
     at::Tensor renders, // [..., image_height, image_width, channels]
     at::Tensor alphas,  // [..., image_height, image_width]

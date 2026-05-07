@@ -24,6 +24,7 @@
 #include <ATen/Functions.h>
 #include <ATen/NativeFunctions.h>
 
+#include "Config.h"
 #include "Common.h"    // where all the macros are defined
 #include "Intersect.h" // where the launch function is declared
 #include "Ops.h"       // a collection of all gsplat operators
@@ -167,6 +168,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> intersect_tile(
     }
 }
 
+#if GSPLAT_BUILD_3DGUT
 std::tuple<at::Tensor, at::Tensor, at::Tensor> intersect_tile_lidar(
     const c10::intrusive_ptr<gsplat::RowOffsetStructuredSpinningLidarModelParametersExt> &lidar,
     const at::Tensor means2d,                    // [..., N, 2] or [nnz, 2]
@@ -308,6 +310,7 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> intersect_tile_lidar(
         return std::make_tuple(tiles_per_gauss, isect_ids, flatten_ids);
     }
 }
+#endif // GSPLAT_BUILD_3DGUT
 
 at::Tensor intersect_offset(
     const at::Tensor &isect_ids, // [n_isects]

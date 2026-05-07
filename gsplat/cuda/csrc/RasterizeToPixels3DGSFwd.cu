@@ -59,6 +59,9 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
     // Texture support (LGTM-inspired): per-Gaussian TxT color grid
     const scalar_t *__restrict__ textures,    // [N, T*T, CDIM] or nullptr
     const uint32_t texture_size,              // T (e.g. 2, 4, 8). 0 = no texture
+    // Edge-aware densification: per-pixel weights → per-Gaussian importance scores
+    const float *__restrict__ pixel_weights,  // [I, H, W] or nullptr
+    float *__restrict__ accum_weights,        // [N] or nullptr (atomicAdd output)
     scalar_t
         *__restrict__ render_colors, // [I, image_height, image_width, CDIM]
     scalar_t *__restrict__ render_alphas, // [I, image_height, image_width, 1]
@@ -83,6 +86,9 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
     }
     if (masks != nullptr) {
         masks += image_id * tile_height * tile_width;
+    }
+    if (pixel_weights != nullptr) {
+        pixel_weights += image_id * image_height * image_width;
     }
 
     float px = (float)j + 0.5f;
@@ -186,6 +192,14 @@ __global__ void rasterize_to_pixels_3dgs_fwd_kernel(
 
             int32_t g = id_batch[t];
             const float vis = alpha * T;
+            // Edge-aware score accumulation (Improved-GS, arXiv 2508.12313)
+            // Accumulates pixel_weight * visibility per Gaussian across all pixels
+            if (pixel_weights != nullptr && accum_weights != nullptr
+                && inside && N > 0 && g >= 0) {
+                uint32_t g_idx = static_cast<uint32_t>(g) % N;
+                atomicAdd(&accum_weights[g_idx],
+                          pixel_weights[pix_id] * vis);
+            }
             if (textures != nullptr && texture_size > 0) {
                 // Bilinear texture lookup (LGTM/BBSplat-style)
                 // Texture is RGB-only (3 channels). Extra channels (depth) use colors.
@@ -273,6 +287,9 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
     // texture support (LGTM-inspired)
     const at::optional<at::Tensor> textures,    // [N, T*T*channels] or nullopt
     const uint32_t texture_size,                // T (2, 4, 8). 0 = no texture
+    // edge-aware densification
+    const at::optional<at::Tensor> pixel_weights,  // [I, H, W] or nullopt
+    at::optional<at::Tensor> accum_weights,         // [N] or nullopt (output)
     // outputs
     at::Tensor renders, // [..., image_height, image_width, channels]
     at::Tensor alphas,  // [..., image_height, image_width]
@@ -332,10 +349,28 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
             textures.has_value() ? textures.value().data_ptr<float>()
                                  : nullptr,
             texture_size,
+            pixel_weights.has_value()
+                ? pixel_weights.value().data_ptr<float>()
+                : nullptr,
+            accum_weights.has_value()
+                ? accum_weights.value().data_ptr<float>()
+                : nullptr,
             renders.data_ptr<float>(),
             alphas.data_ptr<float>(),
             last_ids.data_ptr<int32_t>()
         );
+
+    // Check for kernel launch errors immediately. Without this, CUDA errors
+    // from this kernel are reported asynchronously at the next CUDA op,
+    // making debugging extremely difficult (e.g., errors appear at a
+    // subsequent torch.zeros() call).
+    cudaError_t err = cudaGetLastError();
+    if (err != cudaSuccess) {
+        AT_ERROR(
+            "rasterize_to_pixels_3dgs_fwd_kernel launch failed: ",
+            cudaGetErrorString(err)
+        );
+    }
 }
 
 // Explicit Instantiation: this should match how it is being called in .cpp
@@ -356,6 +391,8 @@ void launch_rasterize_to_pixels_3dgs_fwd_kernel(
         const at::Tensor flatten_ids,                                          \
         const at::optional<at::Tensor> textures,                               \
         uint32_t texture_size,                                                 \
+        const at::optional<at::Tensor> pixel_weights,                          \
+        at::optional<at::Tensor> accum_weights,                                \
         at::Tensor renders,                                                    \
         at::Tensor alphas,                                                     \
         at::Tensor last_ids                                                    \

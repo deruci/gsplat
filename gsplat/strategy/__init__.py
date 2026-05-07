@@ -15,4 +15,5 @@
 
 from .base import Strategy
 from .default import DefaultStrategy
+from .edge_aware import EdgeAwareStrategy
 from .mcmc import MCMCStrategy

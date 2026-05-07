@@ -321,7 +321,7 @@ std::tuple<at::Tensor, at::Tensor> quat_scale_to_covar_preci_bwd(
 );
 
 // Rasterize 3D Gaussian to pixels
-std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
+std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     const at::Tensor &means2d,
     const at::Tensor &conics,
     const at::Tensor &colors,
@@ -334,7 +334,8 @@ std::tuple<at::Tensor, at::Tensor, at::Tensor> rasterize_to_pixels_3dgs_fwd(
     const at::Tensor &tile_offsets,
     const at::Tensor &flatten_ids,
     const at::optional<at::Tensor> &textures,
-    int64_t texture_size
+    int64_t texture_size,
+    const at::optional<at::Tensor> &pixel_weights
 );
 std::tuple<at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor, at::Tensor>
 rasterize_to_pixels_3dgs_bwd(
